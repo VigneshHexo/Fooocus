@@ -1,19 +1,21 @@
-import os
 import random
 import modules.default_pipeline as pipeline
 import modules.path
+import modules.patch
 
-from PIL import Image
 from modules.sdxl_styles import apply_style, aspect_ratios
-from modules.util import generate_temp_filename
+from modules.private_logger import log
+
 
 def handler(task):
     outputs = []
     prompt, negative_prompt, style_selction, performance_selction, \
-    aspect_ratios_selction, image_number, image_seed, base_model_name, refiner_model_name, \
+    aspect_ratios_selction, image_number, image_seed, sharpness, base_model_name, refiner_model_name, \
     l1, w1, l2, w2, l3, w3, l4, w4, l5, w5 = task
 
     loras = [(l1, w1), (l2, w2), (l3, w3), (l4, w4), (l5, w5)]
+
+    modules.patch.sharpness = sharpness
 
     pipeline.refresh_base_model(base_model_name)
     pipeline.refresh_refiner_model(refiner_model_name)
@@ -24,17 +26,22 @@ def handler(task):
 
     if performance_selction == 'Speed':
         steps = 30
-        switch = 20
+        switch = 15
     else:
         steps = 60
-        switch = 40
+        switch = 30
 
     width, height = aspect_ratios[aspect_ratios_selction]
 
     results = []
     seed = image_seed
-    if not isinstance(seed, int) or seed < 0 or seed > 65535:
-        seed = random.randint(1, 65535)
+    max_seed = int(1024*1024*1024)
+
+    if not isinstance(seed, int):
+        seed = random.randint(1, max_seed)
+    if seed < 0:
+        seed = - seed
+    seed = seed % max_seed
 
     all_steps = steps * image_number
 
@@ -49,9 +56,21 @@ def handler(task):
         imgs = pipeline.process(p_txt, n_txt, steps, switch, width, height, seed, callback=callback)
 
         for x in imgs:
-            local_temp_filename = generate_temp_filename(folder=modules.path.temp_outputs_path, extension='png')
-            os.makedirs(os.path.dirname(local_temp_filename), exist_ok=True)
-            Image.fromarray(x).save(local_temp_filename)
+            d = [
+                ('Prompt', prompt),
+                ('Negative Prompt', negative_prompt),
+                ('Style', style_selction),
+                ('Performance', performance_selction),
+                ('Resolution', str((width, height))),
+                ('Sharpness', sharpness),
+                ('Base Model', base_model_name),
+                ('Refiner Model', refiner_model_name),
+                ('Seed', seed)
+            ]
+            for n, w in loras:
+                if n != 'None':
+                    d.append((f'LoRA [{n}] weight', w))
+            log(x, d)
 
         seed += 1
         results += imgs
